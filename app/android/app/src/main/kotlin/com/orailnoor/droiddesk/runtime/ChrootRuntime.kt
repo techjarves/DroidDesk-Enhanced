@@ -2,6 +2,7 @@ package com.orailnoor.droiddesk.runtime
 
 import android.content.Context
 import android.util.Log
+import android.util.Base64
 import java.io.File
 import kotlin.concurrent.thread
 
@@ -52,6 +53,23 @@ class ChrootRuntime(private val context: Context) {
     fun getRootfsPath(): String = rootfsDir.absolutePath
 
     fun getRootfsSizeMB(): Long = rootfsManager.getRootfsSizeMB()
+
+    fun readLinuxClipboard(): String? = runCatching {
+        val encoded = rootShell.exec(
+            "chroot ${rootfsDir.absolutePath} /bin/bash -c " +
+                shellQuote("DISPLAY=:0 xclip -selection clipboard -o 2>/dev/null | base64 -w0"),
+        ).trim()
+        if (encoded.isEmpty()) "" else String(Base64.decode(encoded, Base64.DEFAULT))
+    }.getOrNull()
+
+    fun writeLinuxClipboard(value: String): Boolean = runCatching {
+        val encoded = Base64.encodeToString(value.toByteArray(), Base64.NO_WRAP)
+        rootShell.exec(
+            "chroot ${rootfsDir.absolutePath} /bin/bash -c " +
+                shellQuote("printf %s ${shellQuote(encoded)} | base64 -d | DISPLAY=:0 xclip -selection clipboard -in"),
+        )
+        true
+    }.getOrDefault(false)
 
     fun getOptionalAppsStatus(): Map<String, Boolean> = mapOf(
         "firefox" to File(rootfsDir, "usr/bin/firefox").exists(),
@@ -180,7 +198,7 @@ class ChrootRuntime(private val context: Context) {
                 onProgress(0.1, "Installing core tools...")
                 if (execChroot(
                     "DEBIAN_FRONTEND=noninteractive TZ=Etc/UTC apt-get install -y --no-install-recommends " +
-                            "locales ca-certificates wget curl dbus-x11",
+                            "locales ca-certificates wget curl dbus-x11 xclip",
                     onLog
                 ) != 0) throw IllegalStateException("Core package installation failed")
 
@@ -310,10 +328,27 @@ class ChrootRuntime(private val context: Context) {
                 wallpaperPathInSession =
                     "/usr/share/backgrounds/droiddesk/ubuntu-touch.jpg",
             )
+            runCatching {
+                AndroidAppBridge.syncLaunchers(
+                    context = context,
+                    homeDir = File(rootfsDir, "root"),
+                    python = File(rootfsDir, "usr/bin/python3"),
+                    sessionRoot = rootfsDir,
+                )
+            }.onFailure { Log.w(TAG, "Android desktop launchers could not be refreshed", it) }
         }
 
         ensureMounts()
         bindX11Socket()
+
+        if (!File(rootfsDir, "usr/bin/xclip").canExecute()) {
+            Log.i(TAG, "Installing the chroot clipboard compatibility helper")
+            val installed = execChroot(
+                "DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends xclip",
+                {},
+            ) == 0
+            if (!installed) Log.w(TAG, "Clipboard helper unavailable; clipboard sync will retry next session")
+        }
 
         val deBin = when (desktopEnv) {
             "lxqt" -> "lxqt-session"
@@ -370,6 +405,37 @@ class ChrootRuntime(private val context: Context) {
                 Log.d(TAG, "Chroot desktop output stream closed")
             }
         }.start()
+    }
+
+    /** Wait until the chroot desktop shell has created its visible components. */
+    fun waitForDesktopReady(desktopEnv: String = "xfce4", timeoutMs: Long = 45_000): Boolean {
+        val processes = when (desktopEnv) {
+            "lxqt" -> listOf("lxqt-session", "lxqt-panel")
+            "mate" -> listOf("mate-session", "mate-panel")
+            "kde" -> listOf("plasmashell")
+            else -> listOf("xfdesktop", "xfce4-panel")
+        }
+        val deadline = System.currentTimeMillis() + timeoutMs
+        while (System.currentTimeMillis() < deadline) {
+            val check = processes.joinToString(" && ") { "pgrep -x '$it' >/dev/null" }
+            val output = runCatching {
+                rootShell.exec("chroot ${rootfsDir.absolutePath} /bin/bash -c ${shellQuote(check)}")
+            }.getOrDefault("")
+            if (!output.contains("not found", ignoreCase = true) &&
+                processes.all { process ->
+                    runCatching {
+                        rootShell.exec(
+                            "chroot ${rootfsDir.absolutePath} /usr/bin/pgrep -x ${shellQuote(process)}",
+                        ).trim().isNotEmpty()
+                    }.getOrDefault(false)
+                }) {
+                Thread.sleep(650)
+                return true
+            }
+            Thread.sleep(150)
+        }
+        Log.w(TAG, "Timed out waiting for chroot $desktopEnv to paint its first desktop frame")
+        return false
     }
 
     /**

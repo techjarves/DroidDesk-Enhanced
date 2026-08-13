@@ -4,6 +4,7 @@ import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
 import android.content.Intent
+import android.app.role.RoleManager
 import android.os.Bundle
 import android.os.Build
 import android.os.PowerManager
@@ -14,6 +15,8 @@ import com.orailnoor.droiddesk.service.DroidDeskService
 import com.orailnoor.droiddesk.runtime.LinuxRuntime
 import com.orailnoor.droiddesk.runtime.ChrootRuntime
 import com.orailnoor.droiddesk.runtime.RootShell
+import com.orailnoor.droiddesk.runtime.AndroidAppBridge
+import com.orailnoor.droiddesk.runtime.DesktopIntegration
 import com.orailnoor.droiddesk.view.AndroidSurfaceViewFactory
 import com.orailnoor.droiddesk.x11.X11ServerService
 import kotlin.concurrent.thread
@@ -25,18 +28,56 @@ class MainActivity : FlutterActivity() {
     companion object {
         private const val CHANNEL = "com.droiddesk/core"
         private const val TAG = "MainActivity"
+        private val packageOperationRunning = java.util.concurrent.atomic.AtomicBoolean(false)
     }
 
     private lateinit var linuxRuntime: LinuxRuntime
     private lateinit var chrootRuntime: ChrootRuntime
+    private lateinit var desktopIntegration: DesktopIntegration
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         linuxRuntime = LinuxRuntime(this)
         chrootRuntime = ChrootRuntime(this)
+        desktopIntegration = DesktopIntegration(this)
 
         if (intent.getBooleanExtra("autoSetup", false)) {
             runAutoChrootSetup()
+        }
+        handleHomeLaunch(intent)
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleHomeLaunch(intent)
+    }
+
+    private fun handleHomeLaunch(homeIntent: Intent) {
+        if (homeIntent.action != Intent.ACTION_MAIN || !homeIntent.hasCategory(Intent.CATEGORY_HOME)) return
+
+        thread(name = "home-launch") {
+            val rooted = chrootRuntime.hasRoot()
+            val desktopEnv = if (rooted) "xfce4" else linuxRuntime.getInstalledDE()
+            val ready = if (rooted) {
+                chrootRuntime.isRootfsReady() && chrootRuntime.isDesktopInstalled()
+            } else {
+                linuxRuntime.isBootstrapped() && desktopEnv.isNotEmpty()
+            }
+            if (!ready) {
+                Log.i(TAG, "Home launch opened setup because Linux is not ready")
+                return@thread
+            }
+
+            startForegroundService()
+            val sessionRunning = if (rooted) chrootRuntime.isRunning() else linuxRuntime.isRunning()
+            runOnUiThread {
+                startActivity(Intent(this, com.orailnoor.droiddesk.view.DesktopActivity::class.java).apply {
+                    putExtra("startSession", !sessionRunning)
+                    putExtra("mode", if (rooted) "chroot" else "termux")
+                    putExtra("de", desktopEnv)
+                })
+            }
         }
     }
 
@@ -104,7 +145,7 @@ class MainActivity : FlutterActivity() {
                 Log.i(TAG, "Auto-setup: launching desktop...")
                 runOnUiThread {
                     val intent = Intent(this@MainActivity, com.orailnoor.droiddesk.view.DesktopActivity::class.java).apply {
-                        putExtra("startSession", true)
+                        putExtra("startSession", !chrootRuntime.isRunning())
                         putExtra("mode", "chroot")
                         putExtra("de", "xfce4")
                     }
@@ -346,6 +387,146 @@ class MainActivity : FlutterActivity() {
                     }
                 }
 
+                // ── Native package store ──
+                "searchNativePackages" -> {
+                    val query = call.argument<String>("query") ?: ""
+                    val limit = call.argument<Int>("limit") ?: 60
+                    thread(name = "package-search") {
+                        val packages = linuxRuntime.searchNativePackages(query, limit)
+                        runOnUiThread { result.success(packages) }
+                    }
+                }
+
+                "getInstalledNativePackages" -> {
+                    thread(name = "installed-packages") {
+                        val packages = linuxRuntime.getInstalledNativePackages()
+                        runOnUiThread { result.success(packages) }
+                    }
+                }
+
+                "installNativePackage" -> {
+                    val packageName = call.argument<String>("package") ?: ""
+                    runPackageOperation(flutterEngine, result, packageName, remove = false)
+                }
+
+                "removeNativePackage" -> {
+                    val packageName = call.argument<String>("package") ?: ""
+                    runPackageOperation(flutterEngine, result, packageName, remove = true)
+                }
+
+                "cancelNativePackageOperation" -> {
+                    result.success(linuxRuntime.cancelPackageOperation())
+                }
+
+                // ── Android + Linux desktop integration ──
+                "searchDesktopItems" -> {
+                    val query = call.argument<String>("query") ?: ""
+                    thread(name = "desktop-search") {
+                        val items = desktopIntegration.search(query, chrootRuntime.hasRoot())
+                        runOnUiThread { result.success(items) }
+                    }
+                }
+
+                "launchDesktopItem" -> {
+                    val kind = call.argument<String>("kind") ?: ""
+                    val id = call.argument<String>("id") ?: ""
+                    when (kind) {
+                        "android" -> result.success(AndroidAppBridge.launchAndroidPackage(this, id))
+                        "setting" -> {
+                            AndroidAppBridge.launchSystemAction(this, id)
+                            result.success(true)
+                        }
+                        "linux", "folder" -> {
+                            thread(name = "launch-desktop-item") {
+                                val rooted = chrootRuntime.hasRoot()
+                                val running = if (rooted) chrootRuntime.isRunning() else linuxRuntime.isRunning()
+                                if (!running) {
+                                    runOnUiThread { openDesktop(startSession = true) }
+                                    if (rooted) chrootRuntime.waitForDesktopReady("xfce4")
+                                    else linuxRuntime.waitForDesktopReady(linuxRuntime.getInstalledDE())
+                                }
+                                val safeId = id.takeIf { it.matches(Regex("[A-Za-z0-9_.+-]+")) }
+                                val command = if (kind == "linux" && safeId != null) {
+                                    "DISPLAY=:0 gtk-launch '$safeId' >/dev/null 2>&1 &"
+                                } else {
+                                    val folder = when (id) {
+                                        "Downloads", "Documents", "Pictures" -> id
+                                        else -> ""
+                                    }
+                                    "DISPLAY=:0 thunar \"${if (chrootRuntime.hasRoot()) "/root" else filesDir.absolutePath + "/home"}${if (folder.isEmpty()) "" else "/$folder"}\" >/dev/null 2>&1 &"
+                                }
+                                if (rooted) chrootRuntime.executeCommand(command)
+                                else linuxRuntime.executeCommand(command)
+                                runOnUiThread {
+                                    if (running) openDesktop(startSession = false)
+                                    result.success(true)
+                                }
+                            }
+                        }
+                        else -> result.success(false)
+                    }
+                }
+
+                "getAndroidApps" -> result.success(AndroidAppBridge.listApps(this))
+                "getDockPackages" -> result.success(AndroidAppBridge.getDockPackages(this))
+                "saveDockPackages" -> {
+                    val packages = call.argument<List<String>>("packages").orEmpty()
+                    AndroidAppBridge.setDockPackages(this, packages)
+                    thread(name = "sync-desktop-dock") {
+                        val synced = runCatching {
+                            syncAndroidDesktopIntegration()
+                            true
+                        }.onFailure { Log.e(TAG, "Could not refresh desktop dock", it) }
+                            .getOrDefault(false)
+                        runOnUiThread { result.success(synced) }
+                    }
+                }
+
+                "listDesktopSnapshots" -> result.success(desktopIntegration.listSnapshots())
+                "createDesktopSnapshot" -> thread(name = "create-desktop-snapshot") {
+                    runCatching { desktopIntegration.createSnapshot(chrootRuntime.hasRoot()) }
+                        .onSuccess { value -> runOnUiThread { result.success(value) } }
+                        .onFailure { error -> runOnUiThread { result.error("snapshot", error.message, null) } }
+                }
+                "restoreDesktopSnapshot" -> {
+                    val name = call.argument<String>("name") ?: ""
+                    thread(name = "restore-desktop-snapshot") {
+                        runCatching {
+                            val rooted = chrootRuntime.hasRoot()
+                            if (chrootRuntime.isRunning()) chrootRuntime.stopSession()
+                            if (linuxRuntime.isRunning()) linuxRuntime.stopSession()
+                            val savedPackages = desktopIntegration.restoreSnapshot(name, rooted)
+                            val missingPackages = desktopIntegration.missingPackages(savedPackages, rooted)
+                            if (missingPackages.isNotEmpty()) {
+                                val command = "DEBIAN_FRONTEND=noninteractive apt-get " +
+                                    "-o Dpkg::Options::=--force-confdef " +
+                                    "-o Dpkg::Options::=--force-confold --no-upgrade install -y " +
+                                    missingPackages.joinToString(" ")
+                                if (rooted) {
+                                    chrootRuntime.ensureMounts()
+                                    try {
+                                        chrootRuntime.executeCommand(command)
+                                    } finally {
+                                        chrootRuntime.unmountAll()
+                                    }
+                                } else {
+                                    linuxRuntime.executeCommand(command)
+                                }
+                            }
+                            true
+                        }.onSuccess { value -> runOnUiThread { result.success(value) } }
+                            .onFailure { error -> runOnUiThread { result.error("restore", error.message, null) } }
+                    }
+                }
+                "deleteDesktopSnapshot" -> {
+                    val name = call.argument<String>("name") ?: ""
+                    result.success(runCatching { desktopIntegration.deleteSnapshot(name) }.getOrDefault(false))
+                }
+                "openAndroidControl" -> {
+                    AndroidAppBridge.launchSystemAction(this, call.argument<String>("action") ?: "settings")
+                    result.success(true)
+                }
+
                 // ── Start Linux session ──
                 "startLinux" -> {
                     val desktopEnv = call.argument<String>("de") ?: "xfce4"
@@ -371,7 +552,7 @@ class MainActivity : FlutterActivity() {
                             }
                             runOnUiThread {
                                 val intent = Intent(this@MainActivity, com.orailnoor.droiddesk.view.DesktopActivity::class.java).apply {
-                                    putExtra("startSession", true)
+                                    putExtra("startSession", !chrootRuntime.isRunning())
                                     putExtra("mode", "chroot")
                                     putExtra("de", desktopEnv)
                                 }
@@ -400,7 +581,7 @@ class MainActivity : FlutterActivity() {
                             }
                             runOnUiThread {
                                 val intent = Intent(this@MainActivity, com.orailnoor.droiddesk.view.DesktopActivity::class.java).apply {
-                                    putExtra("startSession", true)
+                                    putExtra("startSession", !linuxRuntime.isRunning())
                                     putExtra("mode", "termux")
                                     putExtra("de", desktopEnv)
                                 }
@@ -412,7 +593,12 @@ class MainActivity : FlutterActivity() {
                 }
 
                 "launchDesktopActivity" -> {
-                    val intent = Intent(this@MainActivity, com.orailnoor.droiddesk.view.DesktopActivity::class.java)
+                    val rooted = chrootRuntime.hasRoot()
+                    val intent = Intent(this@MainActivity, com.orailnoor.droiddesk.view.DesktopActivity::class.java).apply {
+                        putExtra("startSession", false)
+                        putExtra("mode", if (rooted) "chroot" else "termux")
+                        putExtra("de", if (rooted) "xfce4" else linuxRuntime.getInstalledDE())
+                    }
                     startActivity(intent)
                     result.success(true)
                 }
@@ -471,6 +657,25 @@ class MainActivity : FlutterActivity() {
                     result.success(isBatteryOptimized())
                 }
 
+                "requestDefaultLauncher" -> {
+                    requestDefaultLauncher()
+                    result.success(true)
+                }
+
+                "unsetDefaultLauncher" -> {
+                    thread(name = "unset-home-role") {
+                        val removed = unsetDefaultLauncher()
+                        runOnUiThread {
+                            if (removed) openHomeChooser() else openHomeSettings()
+                            result.success(removed)
+                        }
+                    }
+                }
+
+                "isDefaultLauncher" -> {
+                    result.success(isDefaultLauncher())
+                }
+
                 "setupBootstrap" -> {
                     if (chrootRuntime.hasRoot()) {
                         // Nothing to bootstrap for chroot; rootfs handles it
@@ -485,6 +690,103 @@ class MainActivity : FlutterActivity() {
                 }
 
                 else -> result.notImplemented()
+            }
+        }
+    }
+
+    private fun syncAndroidDesktopIntegration() {
+        val rooted = chrootRuntime.hasRoot()
+        if (rooted) {
+            val rootfs = java.io.File(filesDir, "rootfs")
+            AndroidAppBridge.syncLaunchers(
+                context = this,
+                homeDir = java.io.File(rootfs, "root"),
+                python = java.io.File(rootfs, "usr/bin/python3"),
+                sessionRoot = rootfs,
+            )
+            if (chrootRuntime.isRunning()) {
+                chrootRuntime.executeCommand(
+                    "export DBUS_SESSION_BUS_ADDRESS=unix:path=/tmp/dbus-session; " +
+                        AndroidAppBridge.xfceDockCommand(this) +
+                        " DISPLAY=:0 xfce4-panel -r >/dev/null 2>&1 || true",
+                )
+            }
+        } else {
+            AndroidAppBridge.syncLaunchers(
+                context = this,
+                homeDir = java.io.File(filesDir, "home"),
+                python = java.io.File(filesDir, "usr/bin/python3"),
+            )
+            if (linuxRuntime.isRunning()) {
+                linuxRuntime.executeCommand(
+                    AndroidAppBridge.xfceDockCommand(this) +
+                        " DISPLAY=:0 xfce4-panel -r >/dev/null 2>&1 || true",
+                )
+            }
+        }
+    }
+
+    private fun openDesktop(startSession: Boolean) {
+        val rooted = chrootRuntime.hasRoot()
+        startForegroundService()
+        startActivity(Intent(this, com.orailnoor.droiddesk.view.DesktopActivity::class.java).apply {
+            putExtra("startSession", startSession)
+            putExtra("mode", if (rooted) "chroot" else "termux")
+            putExtra("de", if (rooted) "xfce4" else linuxRuntime.getInstalledDE())
+        })
+    }
+
+    private fun runPackageOperation(
+        flutterEngine: FlutterEngine,
+        result: MethodChannel.Result,
+        packageName: String,
+        remove: Boolean,
+    ) {
+        if (!packageOperationRunning.compareAndSet(false, true)) {
+            MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CHANNEL).invokeMethod(
+                "onPackageOperationProgress",
+                mapOf(
+                    "progress" to -1.0,
+                    "status" to "Previous package operation is still stopping. Try again.",
+                ),
+            )
+            result.success(false)
+            return
+        }
+        thread(name = if (remove) "package-remove" else "package-install") {
+            linuxRuntime.beginPackageOperation()
+            linuxRuntime.setInstallLogSink { chunk ->
+                runOnUiThread {
+                    MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CHANNEL).invokeMethod(
+                        "onPackageOperationLog",
+                        mapOf("text" to chunk),
+                    )
+                }
+            }
+            val progress: (Double, String) -> Unit = { value, status ->
+                runOnUiThread {
+                    MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CHANNEL).invokeMethod(
+                        "onPackageOperationProgress",
+                        mapOf("progress" to value, "status" to status),
+                    )
+                }
+            }
+            try {
+                startForegroundService()
+                val ok = if (remove) {
+                    linuxRuntime.removeStorePackage(packageName, progress)
+                } else {
+                    linuxRuntime.installStorePackage(packageName, progress)
+                }
+                runOnUiThread { result.success(ok) }
+            } catch (error: Throwable) {
+                Log.e(TAG, "Package operation failed for $packageName", error)
+                progress(-1.0, error.message ?: "Package operation failed")
+                runOnUiThread { result.success(false) }
+            } finally {
+                linuxRuntime.setInstallLogSink(null)
+                linuxRuntime.finishPackageOperation()
+                packageOperationRunning.set(false)
             }
         }
     }
@@ -519,6 +821,73 @@ class MainActivity : FlutterActivity() {
             }
             startActivity(intent)
         }
+    }
+
+    private fun isDefaultLauncher(): Boolean {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            val roleManager = getSystemService(RoleManager::class.java)
+            roleManager.isRoleAvailable(RoleManager.ROLE_HOME) &&
+                roleManager.isRoleHeld(RoleManager.ROLE_HOME)
+        } else {
+            val homeIntent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME)
+            packageManager.resolveActivity(
+                homeIntent,
+                android.content.pm.PackageManager.MATCH_DEFAULT_ONLY,
+            )?.activityInfo?.packageName == packageName
+        }
+    }
+
+    private fun requestDefaultLauncher() {
+        if (isDefaultLauncher()) {
+            Toast.makeText(this, "DroidDesk is already the default launcher", Toast.LENGTH_SHORT).show()
+            return
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            val roleManager = getSystemService(RoleManager::class.java)
+            if (roleManager.isRoleAvailable(RoleManager.ROLE_HOME)) {
+                startActivity(roleManager.createRequestRoleIntent(RoleManager.ROLE_HOME))
+                return
+            }
+        }
+        startActivity(Intent(Settings.ACTION_HOME_SETTINGS))
+    }
+
+    private fun unsetDefaultLauncher(): Boolean {
+        if (!isDefaultLauncher()) return true
+
+        val rootShell = RootShell(this)
+        if (rootShell.hasRoot()) {
+            runCatching {
+                val userId = android.os.Process.myUid() / 100000
+                rootShell.exec(
+                    "cmd role remove-role-holder --user $userId " +
+                        "android.app.role.HOME $packageName",
+                )
+                repeat(10) {
+                    if (!isDefaultLauncher()) return true
+                    Thread.sleep(100)
+                }
+            }.onFailure { Log.w(TAG, "Could not remove the Home role with root", it) }
+        }
+
+        // Older Android versions may still store Home as a preferred activity
+        // rather than a RoleManager holder. Apps may clear their own preference.
+        runCatching { packageManager.clearPackagePreferredActivities(packageName) }
+        return !isDefaultLauncher()
+    }
+
+    private fun openHomeChooser() {
+        val homeIntent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME)
+        startActivity(Intent.createChooser(homeIntent, "Choose your Home app"))
+    }
+
+    private fun openHomeSettings() {
+        Toast.makeText(
+            this,
+            "Android requires you to select another default Home app",
+            Toast.LENGTH_LONG,
+        ).show()
+        startActivity(Intent(Settings.ACTION_HOME_SETTINGS))
     }
 
     // ── Hardware Detection ──

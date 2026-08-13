@@ -6,6 +6,7 @@ import 'package:droiddesk/state/app_state.dart';
 import 'package:droiddesk/services/platform_bridge.dart';
 import 'package:droiddesk/screens/setup/de_install_screen.dart';
 import 'package:droiddesk/screens/apps/app_catalog_screen.dart';
+import 'package:droiddesk/screens/desktop_tools_screen.dart';
 
 /// Home dashboard — shown after setup is complete.
 /// Central hub for launching the desktop, terminal, and managing the environment.
@@ -401,14 +402,14 @@ class HomeScreen extends StatelessWidget {
 
   // ── Dialogs ──
 
-  void _showSettings(BuildContext context) {
+  void _showSettings(BuildContext pageContext) {
     showModalBottomSheet(
-      context: context,
+      context: pageContext,
       backgroundColor: DroidTheme.surface,
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
       ),
-      builder: (context) => Padding(
+      builder: (sheetContext) => Padding(
         padding: const EdgeInsets.all(24),
         child: Column(
           mainAxisSize: MainAxisSize.min,
@@ -425,7 +426,53 @@ class HomeScreen extends StatelessWidget {
               subtitle: const Text('Disable to prevent session killing'),
               onTap: () {
                 DroidDeskPlatform.requestBatteryOptimization();
-                Navigator.pop(context);
+                Navigator.pop(sheetContext);
+              },
+            ),
+            ListTile(
+              leading: const Icon(
+                Icons.home_rounded,
+                color: DroidTheme.primaryLight,
+              ),
+              title: const Text('Set as default launcher'),
+              subtitle: const Text(
+                'Open the Linux desktop when the phone starts',
+              ),
+              onTap: () {
+                Navigator.pop(sheetContext);
+                DroidDeskPlatform.requestDefaultLauncher();
+              },
+            ),
+            FutureBuilder<bool>(
+              future: DroidDeskPlatform.isDefaultLauncher(),
+              builder: (_, snapshot) {
+                if (snapshot.data != true) return const SizedBox.shrink();
+                return ListTile(
+                  leading: const Icon(
+                    Icons.home_outlined,
+                    color: DroidTheme.error,
+                  ),
+                  title: const Text('Stop using as default launcher'),
+                  subtitle: const Text('Choose another Home app directly'),
+                  onTap: () {
+                    Navigator.pop(sheetContext);
+                    _confirmUnsetLauncher(pageContext);
+                  },
+                );
+              },
+            ),
+            ListTile(
+              leading: const Icon(
+                Icons.auto_awesome_rounded,
+                color: DroidTheme.accent,
+              ),
+              title: const Text('Desktop Tools'),
+              subtitle: const Text('Manage dock apps and desktop backups'),
+              onTap: () {
+                Navigator.pop(sheetContext);
+                Navigator.of(pageContext).push(
+                  MaterialPageRoute(builder: (_) => const DesktopToolsScreen()),
+                );
               },
             ),
             ListTile(
@@ -433,13 +480,38 @@ class HomeScreen extends StatelessWidget {
               title: const Text('Reinstall Linux'),
               subtitle: const Text('Re-download and set up rootfs'),
               onTap: () {
-                Navigator.pop(context);
+                Navigator.pop(sheetContext);
               },
             ),
           ],
         ),
       ),
     );
+  }
+
+  Future<void> _confirmUnsetLauncher(BuildContext context) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Change default launcher?'),
+        content: const Text(
+          'DroidDesk will stop opening automatically as your Home app. Android will ask you to choose another launcher.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: const Text('Change launcher'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed == true) {
+      await DroidDeskPlatform.unsetDefaultLauncher();
+    }
   }
 
   void _showTerminal(BuildContext context, AppState state) {

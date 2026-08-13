@@ -72,9 +72,29 @@ class LinuxRuntime(private val context: Context) {
 
     @Volatile private var activeCommandProcess: Process? = null
     @Volatile private var installLogSink: ((String) -> Unit)? = null
+    @Volatile private var packageOperationCancelled = false
 
     fun setInstallLogSink(sink: ((String) -> Unit)?) {
         installLogSink = sink
+    }
+
+    fun beginPackageOperation() {
+        // A previous App Store screen may have been closed while apt was still
+        // running. Stop that process before accepting a new transaction.
+        if (activeCommandProcess?.isAlive == true) interruptCommand()
+        packageOperationCancelled = false
+        clearStalePackageLocks()
+    }
+
+    fun finishPackageOperation() {
+        packageOperationCancelled = false
+    }
+
+    fun cancelPackageOperation(): Boolean {
+        packageOperationCancelled = true
+        val wasRunning = activeCommandProcess?.isAlive == true
+        interruptCommand()
+        return wasRunning
     }
 
     // ── Base directories (all inside app's private storage) ──
@@ -920,6 +940,7 @@ class LinuxRuntime(private val context: Context) {
         val hookC = File(tmpDir, "socket_hook.c")
         val hookBuildC = File(tmpDir, "socket_hook_build.c")
         val hookSo = File(prefixDir, "lib/libsocket_hook.so")
+        val buildMarker = File(prefixDir, "lib/.socket_hook_build")
         File(prefixDir, "lib").mkdirs()
 
         try {
@@ -930,6 +951,14 @@ class LinuxRuntime(private val context: Context) {
             }
         } catch (e: Exception) {
             Log.e(TAG, "Failed to copy socket_hook.c asset: ${e.message}")
+            return
+        }
+
+        val buildSignature = java.security.MessageDigest.getInstance("SHA-256")
+            .digest((hookC.readText() + "\n" + prefixDir.absolutePath).toByteArray())
+            .joinToString("") { "%02x".format(it) }
+        if (hookSo.isFile && buildMarker.readTextOrNull() == buildSignature) {
+            Log.d(TAG, "Native socket hook is current; skipping compilation")
             return
         }
 
@@ -965,6 +994,7 @@ class LinuxRuntime(private val context: Context) {
                 val log = process.inputStream.bufferedReader().readText()
                 val exitCode = process.waitFor()
                 if (exitCode == 0) {
+                    buildMarker.writeText(buildSignature)
                     Log.i(TAG, "Native compilation of libsocket_hook.so successful!")
                 } else {
                     Log.e(TAG, "Native compilation failed (code $exitCode): $log")
@@ -976,6 +1006,8 @@ class LinuxRuntime(private val context: Context) {
             Log.w(TAG, "clang binary not found yet. Cannot compile socket_hook.c.")
         }
     }
+
+    private fun File.readTextOrNull(): String? = runCatching { readText() }.getOrNull()
 
     // ── Environment Configuration ──
 
@@ -1108,9 +1140,21 @@ class LinuxRuntime(private val context: Context) {
         // command is therefore allowed to fail specifically when that recovery
         // pass succeeds and all requested packages are present.
         Log.i(TAG, "Running: $cmd")
-        val installOutput = executeCommand(cmd)
+        val boundedCommand = if (cmd.startsWith("dpkg --configure")) {
+            "timeout --signal=TERM --kill-after=5s 90s $cmd"
+        } else {
+            cmd
+        }
+        val installOutput = executeCommand(boundedCommand)
         patchShebangs(force = true)
-        val configureOutput = executeCommand("dpkg --configure -a")
+        if (packageOperationCancelled) return false
+        val configureOutput = if (cmd.startsWith("dpkg --configure")) {
+            installOutput
+        } else {
+            executeCommand(
+                "timeout --signal=TERM --kill-after=5s 90s dpkg --configure -a",
+            )
+        }
         if (configureOutput.startsWith("Error:")) {
             return false
         }
@@ -1163,26 +1207,41 @@ class LinuxRuntime(private val context: Context) {
         val packageNames = packages.joinToString(" ")
 
         fun installAndRecover(): Boolean {
-            val installOutput = executeCommand("apt-get install -y $packageNames")
+            val installOutput = executeCommand(
+                "DEBIAN_FRONTEND=noninteractive apt-get " +
+                    "-o Dpkg::Options::=--force-confdef " +
+                    "-o Dpkg::Options::=--force-confold install -y $packageNames",
+            )
+            if (packageOperationCancelled) return false
             patchShebangs(force = true)
             // A relocated package may already be unpacked while dependencies are
             // still missing (notably Node.js -> c-ares). Let apt complete that
             // dependency transaction after its maintainer scripts are patched.
-            executeCommand("apt-get --fix-broken install -y")
+            executeCommand(
+                "timeout --signal=TERM --kill-after=5s 120s " +
+                    "env DEBIAN_FRONTEND=noninteractive apt-get " +
+                    "-o Dpkg::Options::=--force-confdef " +
+                    "-o Dpkg::Options::=--force-confold --fix-broken install -y",
+            )
+            if (packageOperationCancelled) return false
             patchShebangs(force = true)
-            val configureOutput = executeCommand("dpkg --configure -a")
+            val configureOutput = executeCommand(
+                "timeout --signal=TERM --kill-after=5s 90s dpkg --configure -a",
+            )
             val installed = packages.all(::isDpkgPackageInstalled)
             return installed && !configureOutput.startsWith("Error:") &&
                 (!installOutput.startsWith("Error:") || installed)
         }
 
         if (installAndRecover()) return true
+        if (packageOperationCancelled) return false
 
         onProgress?.invoke(retryProgress, "Refreshing package repositories and retrying...")
         // apt may update main/X11 successfully while a third-party repository is
         // temporarily inconsistent. Retrying is still useful with those newly
         // refreshed lists and apt's last verified TUR index.
-        executeCommand("apt-get update")
+        executeCommand("timeout --signal=TERM --kill-after=5s 120s apt-get update")
+        if (packageOperationCancelled) return false
         return installAndRecover()
     }
 
@@ -1325,7 +1384,7 @@ class LinuxRuntime(private val context: Context) {
         onProgress?.invoke(0.34, "Installing X11 and audio packages...")
         // DroidDesk embeds the X server, so termux-x11-nightly is deliberately
         // not installed. All desktops connect to the service's DISPLAY=:0.
-        if (!installPackageGroup("pkg install -y xorg-xrandr pulseaudio")) {
+        if (!installPackageGroup("pkg install -y xorg-xrandr pulseaudio xclip")) {
             Log.e(TAG, "Native X11 runtime package install failed")
             return false
         }
@@ -1436,6 +1495,236 @@ class LinuxRuntime(private val context: Context) {
         return verified
     }
 
+    // ── Native package store ──
+
+    fun searchNativePackages(query: String, limit: Int = 60): List<Map<String, Any>> {
+        if (!isBootstrapped()) return emptyList()
+        val cleanQuery = query.trim().take(60)
+        if (!cleanQuery.matches(Regex("[A-Za-z0-9+._ -]*"))) return emptyList()
+        val output = runQuickCommand("apt-cache search --names-only '${cleanQuery.ifEmpty { "." }}'")
+        val installed = installedPackageRecords().associateBy { it["name"] as String }
+        return output.lineSequence().mapNotNull { line ->
+            val separator = line.indexOf(" - ")
+            if (separator <= 0) return@mapNotNull null
+            val name = line.substring(0, separator).substringBefore(':').trim()
+            if (!isSafePackageName(name)) return@mapNotNull null
+            val description = line.substring(separator + 3).trim()
+            val record = installed[name]
+            mapOf(
+                "name" to name,
+                "description" to description,
+                "version" to (record?.get("version") ?: ""),
+                "section" to (record?.get("section") ?: categoryForPackage(name, description)),
+                "installed" to (record != null),
+                "gui" to providesDesktopEntry(name),
+            )
+        }.distinctBy { it["name"] }.take(limit.coerceIn(1, 100)).toList()
+    }
+
+    fun getInstalledNativePackages(limit: Int = 500): List<Map<String, Any>> {
+        val visible = storeInstalledPackages() + setOf(
+            "firefox", "code-oss", "libreoffice", "gimp", "blender", "vlc",
+            "nodejs", "python", "imagemagick",
+        )
+        return installedPackageRecords()
+            .filter { record ->
+                val name = record["name"] as? String ?: return@filter false
+                visible.contains(name)
+            }
+            .take(limit.coerceIn(1, 1000))
+    }
+
+    fun installStorePackage(
+        packageName: String,
+        onProgress: (Double, String) -> Unit,
+    ): Boolean {
+        if (!isSafePackageName(packageName)) {
+            onProgress(-1.0, "Invalid package name")
+            return false
+        }
+        onProgress(0.08, "Repairing interrupted package operations...")
+        installPackageGroup("dpkg --configure -a")
+        if (packageOperationCancelled) {
+            onProgress(-1.0, "Installation cancelled")
+            return false
+        }
+        onProgress(0.22, "Installing $packageName and dependencies...")
+        val optionalId = when (packageName) {
+            "firefox" -> "firefox"
+            "code-oss", "code" -> "code_oss"
+            "nodejs" -> "nodejs"
+            "imagemagick" -> "imagemagick"
+            else -> null
+        }
+        val ok = if (optionalId != null) {
+            installOptionalApp(optionalId) { progress, status ->
+                onProgress(0.22 + progress.coerceIn(0.0, 1.0) * 0.68, status)
+            }
+        } else {
+            installOptionalPackages(listOf(packageName), onProgress, 0.5)
+        }
+        if (packageOperationCancelled) {
+            onProgress(-1.0, "Installation cancelled")
+            return false
+        }
+        patchShebangs(force = true)
+        refreshDesktopMenus()
+        val installed = ok && isDpkgPackageInstalled(packageName)
+        if (installed) setStorePackageInstalled(packageName, true)
+        onProgress(if (installed) 1.0 else -1.0, if (installed) "$packageName installed" else "$packageName installation failed")
+        return installed
+    }
+
+    fun removeStorePackage(
+        packageName: String,
+        onProgress: (Double, String) -> Unit,
+    ): Boolean {
+        if (!isSafePackageName(packageName) || isProtectedPackage(packageName)) {
+            onProgress(-1.0, "This package is required by DroidDesk")
+            return false
+        }
+        onProgress(0.15, "Removing $packageName...")
+        val output = executeCommand("apt-get remove -y $packageName")
+        if (packageOperationCancelled) {
+            onProgress(-1.0, "Removal cancelled")
+            return false
+        }
+        patchShebangs(force = true)
+        executeCommand("dpkg --configure -a")
+        refreshDesktopMenus()
+        val removed = !isDpkgPackageInstalled(packageName)
+        if (removed) setStorePackageInstalled(packageName, false)
+        onProgress(if (removed) 1.0 else -1.0, if (removed) "$packageName removed" else "$packageName removal failed")
+        return removed && !output.startsWith("Error:")
+    }
+
+    private fun installedPackageRecords(): List<Map<String, Any>> {
+        val statusFile = File(prefixDir, "var/lib/dpkg/status")
+        if (!statusFile.isFile) return emptyList()
+        return statusFile.readText().split(Regex("\\n\\s*\\n")).mapNotNull { paragraph ->
+            val fields = mutableMapOf<String, String>()
+            var currentKey: String? = null
+            paragraph.lineSequence().forEach { line ->
+                if (line.startsWith(" ") && currentKey != null) {
+                    fields[currentKey!!] = fields[currentKey!!].orEmpty() + " " + line.trim()
+                } else {
+                    val colon = line.indexOf(':')
+                    if (colon > 0) {
+                        currentKey = line.substring(0, colon)
+                        fields[currentKey!!] = line.substring(colon + 1).trim()
+                    }
+                }
+            }
+            if (fields["Status"] != "install ok installed") return@mapNotNull null
+            val name = fields["Package"]?.substringBefore(':') ?: return@mapNotNull null
+            val description = fields["Description"].orEmpty().substringBefore(" . ").trim()
+            mapOf(
+                "name" to name,
+                "description" to description,
+                "version" to fields["Version"].orEmpty(),
+                "section" to fields["Section"].orEmpty().ifEmpty { categoryForPackage(name, description) },
+                "installed" to true,
+                "gui" to providesDesktopEntry(name),
+                "removable" to !isProtectedPackage(name),
+            )
+        }.sortedBy { (it["name"] as String).lowercase() }
+    }
+
+    private fun providesDesktopEntry(packageName: String): Boolean {
+        val fileList = File(prefixDir, "var/lib/dpkg/info/$packageName.list")
+        return fileList.isFile && fileList.useLines { lines ->
+            lines.any { it.contains("/share/applications/") && it.endsWith(".desktop") }
+        }
+    }
+
+    private fun categoryForPackage(name: String, description: String): String {
+        val text = "$name $description".lowercase()
+        return when {
+            listOf("browser", "firefox", "chromium").any(text::contains) -> "Internet"
+            listOf("editor", "compiler", "git", "python", "nodejs", "ide").any(text::contains) -> "Development"
+            listOf("image", "photo", "graphics", "gimp", "blender").any(text::contains) -> "Graphics"
+            listOf("audio", "video", "media", "music", "vlc").any(text::contains) -> "Multimedia"
+            listOf("office", "document", "spreadsheet", "pdf").any(text::contains) -> "Office"
+            else -> "System"
+        }
+    }
+
+    private fun isSafePackageName(packageName: String): Boolean =
+        packageName.matches(Regex("[a-z0-9][a-z0-9+.-]{0,127}"))
+
+    private fun isProtectedPackage(packageName: String): Boolean =
+        packageName in setOf(
+            "apt", "bash", "coreutils", "dpkg", "termux-tools", "termux-am", "glibc-repo",
+            "x11-repo", "tur-repo", "pulseaudio", "dbus", "python", "xfce4", "xfce4-session",
+            "xfce4-panel", "xfdesktop", "xfwm4", "xfconf", "thunar", "xorg-xrandr",
+        )
+
+    private fun storeInstalledPackages(): Set<String> =
+        context.getSharedPreferences("package_store", Context.MODE_PRIVATE)
+            .getStringSet("installed", emptySet())
+            ?.toSet()
+            .orEmpty()
+
+    private fun setStorePackageInstalled(packageName: String, installed: Boolean) {
+        val preferences = context.getSharedPreferences("package_store", Context.MODE_PRIVATE)
+        val packages = preferences.getStringSet("installed", emptySet())?.toMutableSet() ?: mutableSetOf()
+        if (installed) packages.add(packageName) else packages.remove(packageName)
+        preferences.edit().putStringSet("installed", packages).commit()
+    }
+
+    private fun runQuickCommand(command: String): String = runCatching {
+        ProcessBuilder(File(binDir, "bash").absolutePath, "-c", command)
+            .directory(prefixDir)
+            .redirectErrorStream(true)
+            .also { builder ->
+                builder.environment().clear()
+                builder.environment().putAll(getTermuxEnv())
+            }
+            .start().let { process ->
+                val output = process.inputStream.bufferedReader().readText()
+                process.waitFor()
+                if (process.exitValue() == 0) output else ""
+            }
+    }.getOrDefault("")
+
+    private fun refreshDesktopMenus() {
+        executeCommand(
+            "update-desktop-database ${prefixDir.absolutePath}/share/applications >/dev/null 2>&1 || true",
+        )
+    }
+
+    fun readLinuxClipboard(): String? = runCatching {
+        val xclip = File(binDir, "xclip")
+        if (!xclip.canExecute()) return null
+        ProcessBuilder(xclip.absolutePath, "-selection", "clipboard", "-o")
+            .directory(homeDir)
+            .redirectErrorStream(true)
+            .also { builder ->
+                builder.environment().clear()
+                builder.environment().putAll(getTermuxEnv())
+                builder.environment()["DISPLAY"] = ":0"
+            }
+            .start().let { process ->
+                val value = process.inputStream.bufferedReader().readText()
+                if (process.waitFor() == 0) value else ""
+            }
+    }.getOrNull()
+
+    fun writeLinuxClipboard(value: String): Boolean = runCatching {
+        val xclip = File(binDir, "xclip")
+        if (!xclip.canExecute()) return false
+        val process = ProcessBuilder(xclip.absolutePath, "-selection", "clipboard", "-in")
+            .directory(homeDir)
+            .redirectErrorStream(true)
+            .also { builder ->
+                builder.environment().clear()
+                builder.environment().putAll(getTermuxEnv())
+                builder.environment()["DISPLAY"] = ":0"
+            }.start()
+        process.outputStream.use { it.write(value.toByteArray()) }
+        process.waitFor() == 0
+    }.getOrDefault(false)
+
     // ── Session Management ──
 
     fun startSession(desktopEnv: String = "xfce4", mode: String = "x11", width: Int = 1920, height: Int = 1080) {
@@ -1457,6 +1746,16 @@ class LinuxRuntime(private val context: Context) {
         compileSocketHook()
         patchEmbeddedXfcePaths()
 
+        val clipboardTool = File(binDir, "xclip")
+        if (!clipboardTool.canExecute()) {
+            Log.i(TAG, "Installing the desktop clipboard compatibility helper")
+            if (installPackageGroup("pkg install -y xclip")) {
+                patchShebangs(force = true)
+            } else {
+                Log.w(TAG, "Clipboard helper unavailable; clipboard sync will retry next session")
+            }
+        }
+
         if (selectedDesktop == "xfce4") {
             XfceMobileProfile.install(
                 context = context,
@@ -1465,6 +1764,11 @@ class LinuxRuntime(private val context: Context) {
                     homeDir,
                     ".local/share/backgrounds/droiddesk-ubuntu-touch.jpg",
                 ),
+            )
+            AndroidAppBridge.syncLaunchers(
+                context = context,
+                homeDir = homeDir,
+                python = File(prefixDir, "bin/python3"),
             )
         }
 
@@ -1548,7 +1852,11 @@ class LinuxRuntime(private val context: Context) {
             "lxqt" -> "startlxqt"
             "mate" -> "mate-session"
             "kde" -> "startplasma-x11"
-            else -> "startxfce4"
+            // The Termux startxfce4 wrapper falls back to Android's /bin/sh
+            // when an X server already exists, which corrupts DISPLAY on
+            // recent Android releases. The session binary starts the same
+            // XFCE components and preserves DroidDesk's prepared environment.
+            else -> "xfce4-session"
         }
 
         val runScript = """
@@ -1619,6 +1927,38 @@ class LinuxRuntime(private val context: Context) {
         Log.i(TAG, "Termux session started")
     }
 
+    /** Wait until the desktop shell processes that paint the first frame exist. */
+    fun waitForDesktopReady(desktopEnv: String = "xfce4", timeoutMs: Long = 45_000): Boolean {
+        val processes = when (normalizedDesktop(desktopEnv)) {
+            "lxqt" -> listOf("lxqt-session", "lxqt-panel")
+            "mate" -> listOf("mate-session", "mate-panel")
+            "kde" -> listOf("plasmashell")
+            else -> listOf("xfdesktop", "xfce4-panel")
+        }
+        val deadline = System.currentTimeMillis() + timeoutMs
+        while (System.currentTimeMillis() < deadline) {
+            val check = processes.joinToString(" && ") { "pgrep -x '$it' >/dev/null" }
+            val ready = runCatching {
+                ProcessBuilder(File(binDir, "bash").absolutePath, "-c", check)
+                    .directory(homeDir)
+                    .redirectErrorStream(true)
+                    .also { builder ->
+                        builder.environment().clear()
+                        builder.environment().putAll(getTermuxEnv())
+                    }
+                    .start()
+                    .waitFor() == 0
+            }.getOrDefault(false)
+            if (ready) {
+                Thread.sleep(650)
+                return true
+            }
+            Thread.sleep(150)
+        }
+        Log.w(TAG, "Timed out waiting for $desktopEnv to paint its first desktop frame")
+        return false
+    }
+
     fun stopSession() {
         Log.i(TAG, "Stopping Linux session...")
         sessionProcess?.let {
@@ -1634,6 +1974,7 @@ class LinuxRuntime(private val context: Context) {
     // ── Command Execution ──
 
     fun executeCommand(command: String, onOutput: ((String) -> Unit)? = null): String {
+        if (packageOperationCancelled) return "Error: Package operation cancelled"
         activeCommandProcess?.let { process ->
             try {
                 Log.d(TAG, "Routing input to active command: $command")
@@ -1695,10 +2036,61 @@ class LinuxRuntime(private val context: Context) {
     }
 
     fun interruptCommand() {
-        activeCommandProcess?.let {
+        activeCommandProcess?.let { process ->
             Log.d(TAG, "Interrupting active command...")
-            it.destroy()
+            val rootPid = processPid(process)
+            val descendants = rootPid?.let(::descendantPids).orEmpty()
+            descendants.asReversed().forEach { pid -> android.os.Process.sendSignal(pid, 15) }
+            rootPid?.let { android.os.Process.sendSignal(it, 15) } ?: process.destroy()
+            try {
+                Thread.sleep(200)
+            } catch (_: InterruptedException) {
+                Thread.currentThread().interrupt()
+            }
+            descendants.asReversed().forEach { pid -> android.os.Process.sendSignal(pid, 9) }
+            if (process.isAlive) process.destroyForcibly()
         }
         activeCommandProcess = null
+    }
+
+    private fun processPid(process: Process): Int? = runCatching {
+        var type: Class<*>? = process.javaClass
+        var pidField: java.lang.reflect.Field? = null
+        while (type != null && pidField == null) {
+            pidField = runCatching { type.getDeclaredField("pid") }.getOrNull()
+            type = type.superclass
+        }
+        requireNotNull(pidField).apply { isAccessible = true }.getInt(process)
+    }.onFailure { Log.w(TAG, "Could not inspect package process PID", it) }
+        .getOrNull()
+
+    private fun descendantPids(parentPid: Int): List<Int> {
+        val result = mutableListOf<Int>()
+        fun collect(pid: Int) {
+            val children = runCatching {
+                File("/proc/$pid/task/$pid/children").readText()
+                    .trim().split(Regex("\\s+"))
+                    .mapNotNull(String::toIntOrNull)
+            }.getOrDefault(emptyList())
+            children.forEach { child ->
+                result += child
+                collect(child)
+            }
+        }
+        collect(parentPid)
+        return result
+    }
+
+    private fun clearStalePackageLocks() {
+        listOf(
+            File(prefixDir, "var/lib/dpkg/lock"),
+            File(prefixDir, "var/lib/dpkg/lock-frontend"),
+            File(prefixDir, "var/cache/apt/archives/lock"),
+            File(prefixDir, "var/lib/apt/lists/lock"),
+        ).forEach { lock ->
+            if (lock.exists() && !lock.delete()) {
+                Log.w(TAG, "Could not remove stale package lock: ${lock.absolutePath}")
+            }
+        }
     }
 }

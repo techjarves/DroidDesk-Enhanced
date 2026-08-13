@@ -13,6 +13,7 @@ import android.os.PowerManager
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
 import com.orailnoor.droiddesk.MainActivity
+import com.orailnoor.droiddesk.runtime.AndroidAppBridge
 
 /**
  * Foreground service that keeps the Linux runtime alive.
@@ -32,6 +33,7 @@ class DroidDeskService : Service() {
 
     override fun onCreate() {
         super.onCreate()
+        AndroidAppBridge.start(this)
         createNotificationChannel()
         acquireWakeLock()
     }
@@ -56,6 +58,7 @@ class DroidDeskService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onDestroy() {
+        AndroidAppBridge.stop()
         releaseWakeLock()
         super.onDestroy()
     }

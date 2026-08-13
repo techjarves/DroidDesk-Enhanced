@@ -429,7 +429,7 @@ class RootfsManager(private val context: Context) {
                 """.trimIndent(), onLog)
 
                 var packages = when (de) {
-                    "xfce4" -> "xfce4 xfce4-terminal xfce4-whiskermenu-plugin thunar mousepad dbus-x11"
+                    "xfce4" -> "xfce4 xfce4-terminal xfce4-whiskermenu-plugin thunar mousepad dbus-x11 xclip"
                     "lxqt" -> "lxqt qterminal pcmanfm-qt featherpad dbus-x11"
                     "mate" -> "mate-desktop-environment mate-terminal dbus-x11"
                     "kde" -> "plasma-desktop konsole dolphin dbus-x11"
