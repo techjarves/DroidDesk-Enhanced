@@ -17,7 +17,7 @@
 
 ---
 
-## 🚀 Overview
+## Overview
 
 **DroidDesk Enhanced** brings full Linux desktop capability directly to your Android device with advanced customization, dynamic light/dark themeing, and modern edge-to-edge UI support. Connect your phone to any monitor via USB-C or wireless bridge, and it transforms instantly into a desktop computer running real Linux applications—from **VS Code** and **LibreOffice** to **Wireshark**, **Metasploit**, and offline **Local AI** models.
 
@@ -25,19 +25,19 @@ Unplug your phone, and your entire workstation stays with you.
 
 ---
 
-## ✨ Key Features
+## Key Features
 
-- ⚡ **Direct Kernel & Hardware Acceleration**: Uses Turnip & Zink Vulkan drivers for Snapdragon / Adreno GPUs with fallbacks for Mesa software rendering.
-- 🎨 **Adaptive Light & Dark Theme System**: Seamlessly switch between dark and light modes live across all screens, cards, and modal sheets.
-- 🌗 **Pre-Installation Onboarding Theme Switcher**: Toggle your preferred aesthetic right from the initial setup screens before installation.
-- 📱 **Edge-to-Edge System Bar Integration**: Clean, transparent Android status bar overlays with adaptive icon brightness on Android 11 through Android 15.
-- 🖥️ **One-Tap Desktop Essentials**: Automated installation of **XFCE4**, **LXQt**, **MATE**, or **KDE Plasma** desktop environments.
-- 🔒 **Dual Architecture**: Supports **Rooted Chroot** (Ubuntu 24.04 LTS) and **Non-Rooted Native Termux/TUR** userspaces.
-- 💻 **Embedded X11 Server**: Renders through an embedded Termux:X11 display server directly on `DISPLAY=:0` without VNC lag.
+- **Direct Kernel & Hardware Acceleration**: Uses Turnip & Zink Vulkan drivers for Snapdragon / Adreno GPUs with fallbacks for Mesa software rendering.
+- **Adaptive Light & Dark Theme System**: Seamlessly switch between dark and light modes live across all screens, cards, and modal sheets.
+- **Pre-Installation Onboarding Theme Switcher**: Toggle your preferred aesthetic right from the initial setup screens before installation.
+- **Edge-to-Edge System Bar Integration**: Clean, transparent Android status bar overlays with adaptive icon brightness on Android 11 through Android 15.
+- **One-Tap Desktop Essentials**: Automated installation of **XFCE4**, **LXQt**, **MATE**, or **KDE Plasma** desktop environments.
+- **Dual Architecture**: Supports **Rooted Chroot** (Ubuntu 24.04 LTS) and **Non-Rooted Native Termux/TUR** userspaces.
+- **Embedded X11 Server**: Renders through an embedded Termux:X11 display server directly on `DISPLAY=:0` without VNC lag.
 
 ---
 
-## 🛠️ What You Can Run
+## What You Can Run
 
 | Category | Supported Tools |
 |---|---|
@@ -48,11 +48,11 @@ Unplug your phone, and your entire workstation stays with you.
 
 ---
 
-## 📱 Quick Start
+## Quick Start
 
 ### Option A: Standalone Android App (Recommended)
 
-1. Download the latest compiled **[Release APK](https://github.com/techjarves/DroidDesk/releases/latest)**.
+1. Download the latest compiled **[Release APK](https://github.com/techjarves/DroidDesk-Enhanced/releases/latest)**.
 2. Install the APK on your Android phone (ARM64, Android 8.0+).
 3. Select your theme (Light/Dark) on the onboarding screen.
 4. Pick your desktop environment (XFCE4, LXQt, MATE, or KDE Plasma) and tap **Install Essentials**.
@@ -73,14 +73,14 @@ bash ~/start-x11.sh
 
 ---
 
-## 🖥️ Display & Monitor Output
+## Display & Monitor Output
 
 - **Direct USB-C Display**: Connect a USB-C to HDMI adapter directly to phones supporting DisplayPort Alt mode.
 - **Raspberry Pi Bridge**: Use a Raspberry Pi Zero 2W connected via USB tethering to mirror the desktop to any HDMI monitor.
 
 ---
 
-## 🤝 Credits & Acknowledgments
+## Credits & Acknowledgments
 
 DroidDesk is built on the incredible work of the open-source Linux and Android community:
 
@@ -97,7 +97,7 @@ DroidDesk is built on the incredible work of the open-source Linux and Android c
 
 ---
 
-## 📄 License & Legal Notice
+## License & Legal Notice
 
 DroidDesk is independent open-source software licensed under the **[GNU General Public License v3.0](LICENSE)**. 
 
