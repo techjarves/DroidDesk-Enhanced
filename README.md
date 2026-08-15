@@ -10,8 +10,8 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/techjarves/DroidDesk/releases/latest"><img src="https://img.shields.io/github/v/release/techjarves/DroidDesk?style=for-the-badge&color=6366F1" alt="Latest Release"></a>
-  <a href="https://github.com/techjarves/DroidDesk/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-GPL--3.0-10B981?style=for-the-badge" alt="License"></a>
+  <a href="https://github.com/techjarves/DroidDesk-Enhanced/releases/latest"><img src="https://img.shields.io/github/v/release/techjarves/DroidDesk-Enhanced?style=for-the-badge&color=6366F1" alt="Latest Release"></a>
+  <a href="https://github.com/techjarves/DroidDesk-Enhanced/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-GPL--3.0-10B981?style=for-the-badge" alt="License"></a>
   <img src="https://img.shields.io/badge/Platform-Android%20%7C%20ARM64-38BDF8?style=for-the-badge" alt="Platform">
 </p>
 
@@ -87,7 +87,7 @@ DroidDesk is built on the incredible work of the open-source Linux and Android c
 - **Original Creator & Architect**: **[orailnoor](https://youtube.com/@orailnoor)** ([GitHub: @orailnoor](https://github.com/orailnoor/DroidDesk))
   *Designed the original DroidDesk Linux setup scripts, Termux integration, embedded X11 architecture, and standalone app core.*
 
-- **Customizations & Enhancements**: **[techjarves](https://github.com/techjarves/DroidDesk)**
+- **Customizations & Enhancements**: **[techjarves](https://github.com/techjarves/DroidDesk-Enhanced)**
   *Implemented the dynamic Light & Dark theme engine, pre-installation onboarding theme selector, status bar edge-to-edge transparent integration, high-contrast terminal bottom sheet, UI contrast overhauls, and distribution releases.*
 
 - **Upstream Open Source Projects**:
