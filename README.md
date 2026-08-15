@@ -2,7 +2,7 @@
   <img src="app/assets/icons/logo.png" width="120" height="120" alt="DroidDesk Logo" style="border-radius: 28px;">
 </p>
 
-<h1 align="center">DroidDesk</h1>
+<h1 align="center">DroidDesk Enhanced</h1>
 
 <p align="center">
   <b>Turn any Android phone into a high-performance Linux desktop workstation.</b><br>
@@ -19,7 +19,7 @@
 
 ## 🚀 Overview
 
-**DroidDesk** brings full Linux desktop capability directly to your Android device. Connect your phone to any monitor via USB-C or wireless bridge, and it transforms instantly into a desktop computer running real Linux applications—from **VS Code** and **LibreOffice** to **Wireshark**, **Metasploit**, and offline **Local AI** models.
+**DroidDesk Enhanced** brings full Linux desktop capability directly to your Android device with advanced customization, dynamic light/dark themeing, and modern edge-to-edge UI support. Connect your phone to any monitor via USB-C or wireless bridge, and it transforms instantly into a desktop computer running real Linux applications—from **VS Code** and **LibreOffice** to **Wireshark**, **Metasploit**, and offline **Local AI** models.
 
 Unplug your phone, and your entire workstation stays with you.
 
