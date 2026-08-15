@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import 'package:droiddesk/theme/droid_theme.dart';
 import 'package:droiddesk/state/app_state.dart';
@@ -29,6 +30,10 @@ class _DroidDeskAppState extends State<DroidDeskApp> {
   @override
   void initState() {
     super.initState();
+    SystemChrome.setEnabledSystemUIMode(
+      SystemUiMode.manual,
+      overlays: SystemUiOverlay.values,
+    );
     // Initialize platform bridge and load state
     WidgetsBinding.instance.addPostFrameCallback((_) {
       context.read<AppState>().initialize();
@@ -37,19 +42,32 @@ class _DroidDeskAppState extends State<DroidDeskApp> {
 
   @override
   Widget build(BuildContext context) {
+    final state = context.watch<AppState>();
+    final isDark = state.isDarkMode;
+
+    final overlayStyle = SystemUiOverlayStyle(
+      statusBarColor: Colors.transparent,
+      statusBarIconBrightness: isDark ? Brightness.light : Brightness.dark,
+      statusBarBrightness: isDark ? Brightness.dark : Brightness.light,
+      systemNavigationBarColor: Colors.transparent,
+      systemNavigationBarIconBrightness: isDark ? Brightness.light : Brightness.dark,
+    );
+
+    SystemChrome.setSystemUIOverlayStyle(overlayStyle);
+
     return MaterialApp(
       title: 'DroidDesk',
       debugShowCheckedModeBanner: false,
-      theme: DroidTheme.themeData,
-      home: Consumer<AppState>(
-        builder: (context, state, _) {
-          // Route to setup wizard or home based on bootstrap state
-          if (state.isSetupComplete) {
-            return const HomeScreen();
-          }
-          return const WelcomeScreen();
-        },
-      ),
+      theme: DroidTheme.lightThemeData,
+      darkTheme: DroidTheme.darkThemeData,
+      themeMode: state.themeMode,
+      builder: (context, child) {
+        return AnnotatedRegion<SystemUiOverlayStyle>(
+          value: overlayStyle,
+          child: child ?? const SizedBox.shrink(),
+        );
+      },
+      home: state.isSetupComplete ? const HomeScreen() : const WelcomeScreen(),
     );
   }
 }

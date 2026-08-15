@@ -15,7 +15,7 @@ class DistroPickerScreen extends StatelessWidget {
 
     return Scaffold(
       body: Container(
-        decoration: const BoxDecoration(gradient: DroidTheme.backgroundGradient),
+        decoration: BoxDecoration(gradient: DroidTheme.backgroundGradient),
         child: SafeArea(
           child: Padding(
             padding: const EdgeInsets.symmetric(horizontal: 24),
@@ -24,8 +24,31 @@ class DistroPickerScreen extends StatelessWidget {
               children: [
                 const SizedBox(height: 16),
 
-                // ── Header ──
-                _buildStepIndicator(1, 3),
+                // ── Header & Theme Toggle ──
+                Row(
+                  children: [
+                    Expanded(child: _buildStepIndicator(1, 3)),
+                    const SizedBox(width: 12),
+                    IconButton(
+                      onPressed: () => state.toggleThemeMode(),
+                      tooltip: state.isDarkMode
+                          ? 'Switch to Light Theme'
+                          : 'Switch to Dark Theme',
+                      icon: Icon(
+                        state.isDarkMode
+                            ? Icons.light_mode_rounded
+                            : Icons.dark_mode_rounded,
+                        color: DroidTheme.textMuted,
+                        size: 20,
+                      ),
+                      padding: EdgeInsets.zero,
+                      constraints: const BoxConstraints(
+                        minWidth: 32,
+                        minHeight: 32,
+                      ),
+                    ),
+                  ],
+                ),
                 const SizedBox(height: 32),
 
                 Text('Choose Your Linux', style: DroidTheme.headingXl)

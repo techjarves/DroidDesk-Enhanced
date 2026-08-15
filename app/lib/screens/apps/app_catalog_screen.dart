@@ -283,7 +283,7 @@ class _AppCatalogScreenState extends State<AppCatalogScreen>
         ),
       ),
       body: Container(
-        decoration: const BoxDecoration(
+        decoration: BoxDecoration(
           gradient: DroidTheme.backgroundGradient,
         ),
         child: TabBarView(
@@ -518,8 +518,8 @@ class _AppCatalogScreenState extends State<AppCatalogScreen>
         .join('\n');
     return Container(
       padding: const EdgeInsets.fromLTRB(18, 12, 18, 14),
-      decoration: const BoxDecoration(
-        color: Color(0xFF080D18),
+      decoration: BoxDecoration(
+        color: DroidTheme.cardBg,
         border: Border(top: BorderSide(color: DroidTheme.surfaceBorder)),
       ),
       child: SafeArea(

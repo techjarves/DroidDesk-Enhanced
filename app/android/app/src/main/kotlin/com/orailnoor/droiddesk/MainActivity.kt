@@ -37,6 +37,10 @@ class MainActivity : FlutterActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        window.statusBarColor = android.graphics.Color.TRANSPARENT
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            window.setDecorFitsSystemWindows(false)
+        }
         linuxRuntime = LinuxRuntime(this)
         chrootRuntime = ChrootRuntime(this)
         desktopIntegration = DesktopIntegration(this)
@@ -45,6 +49,34 @@ class MainActivity : FlutterActivity() {
             runAutoChrootSetup()
         }
         handleHomeLaunch(intent)
+    }
+
+    override fun onResume() {
+        super.onResume()
+        restoreSystemBars()
+    }
+
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (hasFocus) {
+            restoreSystemBars()
+            window.decorView.post { restoreSystemBars() }
+        }
+    }
+
+    @Suppress("DEPRECATION")
+    private fun restoreSystemBars() {
+        window.clearFlags(android.view.WindowManager.LayoutParams.FLAG_FULLSCREEN)
+        window.decorView.systemUiVisibility =
+            android.view.View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            window.setDecorFitsSystemWindows(true)
+            window.insetsController?.show(
+                android.view.WindowInsets.Type.statusBars() or
+                    android.view.WindowInsets.Type.navigationBars()
+            )
+        }
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -676,6 +708,14 @@ class MainActivity : FlutterActivity() {
                     result.success(isDefaultLauncher())
                 }
 
+                "updateStatusBarTheme" -> {
+                    val isLight = call.argument<Boolean>("isLightMode") ?: false
+                    runOnUiThread {
+                        updateStatusBarIcons(isLight)
+                    }
+                    result.success(true)
+                }
+
                 "setupBootstrap" -> {
                     if (chrootRuntime.hasRoot()) {
                         // Nothing to bootstrap for chroot; rootfs handles it
@@ -691,6 +731,25 @@ class MainActivity : FlutterActivity() {
 
                 else -> result.notImplemented()
             }
+        }
+    }
+
+    private fun updateStatusBarIcons(isLightMode: Boolean) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            window.insetsController?.setSystemBarsAppearance(
+                if (isLightMode) android.view.WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS else 0,
+                android.view.WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS
+            )
+        } else {
+            @Suppress("DEPRECATION")
+            var flags = window.decorView.systemUiVisibility
+            flags = if (isLightMode) {
+                flags or android.view.View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR
+            } else {
+                flags and android.view.View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR.inv()
+            }
+            @Suppress("DEPRECATION")
+            window.decorView.systemUiVisibility = flags
         }
     }
 

@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
 import 'package:flutter_animate/flutter_animate.dart';
 import 'package:droiddesk/theme/droid_theme.dart';
+import 'package:droiddesk/state/app_state.dart';
 import 'package:droiddesk/screens/setup/de_picker.dart';
 
 /// Welcome screen — first thing the user sees.
@@ -10,9 +12,11 @@ class WelcomeScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final state = context.watch<AppState>();
+
     return Scaffold(
       body: Container(
-        decoration: const BoxDecoration(
+        decoration: BoxDecoration(
           gradient: DroidTheme.backgroundGradient,
         ),
         child: SafeArea(
@@ -20,6 +24,21 @@ class WelcomeScreen extends StatelessWidget {
             padding: const EdgeInsets.symmetric(horizontal: 32),
             child: Column(
               children: [
+                Align(
+                  alignment: Alignment.topRight,
+                  child: IconButton(
+                    onPressed: () => state.toggleThemeMode(),
+                    tooltip: state.isDarkMode
+                        ? 'Switch to Light Theme'
+                        : 'Switch to Dark Theme',
+                    icon: Icon(
+                      state.isDarkMode
+                          ? Icons.light_mode_rounded
+                          : Icons.dark_mode_rounded,
+                      color: DroidTheme.textMuted,
+                    ),
+                  ),
+                ),
                 const Spacer(flex: 2),
 
                 // ── Logo / Icon ──

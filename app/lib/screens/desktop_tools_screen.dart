@@ -167,7 +167,7 @@ class _DesktopToolsScreenState extends State<DesktopToolsScreen>
         ),
       ),
       body: Container(
-        decoration: const BoxDecoration(
+        decoration: BoxDecoration(
           gradient: DroidTheme.backgroundGradient,
         ),
         child: TabBarView(

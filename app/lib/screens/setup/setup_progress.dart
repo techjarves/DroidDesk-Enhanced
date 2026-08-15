@@ -121,7 +121,7 @@ class _SetupProgressScreenState extends State<SetupProgressScreen> {
 
     return Scaffold(
       body: Container(
-        decoration: const BoxDecoration(
+        decoration: BoxDecoration(
           gradient: DroidTheme.backgroundGradient,
         ),
         child: SafeArea(
@@ -129,6 +129,22 @@ class _SetupProgressScreenState extends State<SetupProgressScreen> {
             padding: const EdgeInsets.symmetric(horizontal: 32),
             child: Column(
               children: [
+                Align(
+                  alignment: Alignment.topRight,
+                  child: IconButton(
+                    onPressed: () => state.toggleThemeMode(),
+                    tooltip: state.isDarkMode
+                        ? 'Switch to Light Theme'
+                        : 'Switch to Dark Theme',
+                    icon: Icon(
+                      state.isDarkMode
+                          ? Icons.light_mode_rounded
+                          : Icons.dark_mode_rounded,
+                      color: DroidTheme.textMuted,
+                      size: 20,
+                    ),
+                  ),
+                ),
                 const Spacer(flex: 1),
 
                 // ── Circular Progress ──

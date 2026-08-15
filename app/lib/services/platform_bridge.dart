@@ -17,6 +17,12 @@ class DroidDeskPlatform {
   static Function(String text)? onPackageOperationLog;
   static Function(String text)? onTerminalOutput;
 
+  static Future<void> updateStatusBarTheme(bool isLightMode) async {
+    try {
+      await _channel.invokeMethod('updateStatusBarTheme', {'isLightMode': isLightMode});
+    } catch (_) {}
+  }
+
   /// Initialize platform channel listeners
   static void init() {
     _channel.setMethodCallHandler((call) async {
